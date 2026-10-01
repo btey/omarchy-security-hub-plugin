@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "security-hub",
   "name": "Security Hub",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "author": "Omarchy Security Hub contributors",
   "license": "MIT",
   "description": "Threat alerts, USBGuard, security tokens, firewall, and hardening status from omarchy-securityd.",
@@ -19,7 +19,15 @@
     "aliases": ["security", "usbguard", "firewall", "yubikey", "hardening"],
     "allowMultiple": false,
     "defaultSection": "right",
-    "defaults": {},
-    "schema": []
+    "defaults": { "checkForUpdates": true },
+    "schema": [
+      {
+        "key": "checkForUpdates",
+        "type": "boolean",
+        "label": "Check for updates",
+        "description": "Once a day, ask the plugin's git origin for a newer version and say so. Nothing updates without a click.",
+        "defaultValue": true
+      }
+    ]
   }
 }
