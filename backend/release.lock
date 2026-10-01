@@ -1,0 +1,4 @@
+# Written by make dist: the backend that backend/install.sh installs.
+version 1.1.9
+commit 2a0f8910f367f4687c14e5095ae2f7cb555a92c8
+sha256 4c245be55cbc3b6432048cb1d8cbd31061f2168d7b071adc795e98fde61132e3  omarchy-security-hub-1.1.9-x86_64.tar.gz
