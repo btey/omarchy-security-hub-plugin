@@ -423,6 +423,29 @@ Item {
     return true
   }
 
+  // VAULT_ADD or VAULT_CREATE (`method`) with `params` from
+  // Vault.checkAddForm. `callback(error, vault)` once. The daemon writes the
+  // configuration file, and for VAULT_CREATE first asks for the new
+  // passphrase with pinentry; the new vault also comes as
+  // VAULT_STATE_CHANGED.
+  function addVault(method, params, callback) {
+    var done = callback || function() {}
+    request(method === "VAULT_CREATE" ? "VAULT_CREATE" : "VAULT_ADD", params, function(error, result) {
+      if (!error && result) root.vaults = Vault.upsertVault(root.vaults, result)
+      done(error, result || null)
+    }, method === "VAULT_CREATE" ? Vault.CREATE_TIMEOUT_MS : undefined)
+  }
+
+  // VAULT_REMOVE: takes the vault out of the configuration file, leaving
+  // its encrypted data. `callback(error)` once.
+  function removeVault(vaultId, callback) {
+    var done = callback || function() {}
+    request("VAULT_REMOVE", { vault_id: vaultId }, function(error) {
+      if (!error) root.vaults = Vault.removeVault(root.vaults, vaultId)
+      done(error)
+    })
+  }
+
   // VAULT_PANIC. `callback(error, result)` once. Each vault that changed
   // also comes as VAULT_STATE_CHANGED; the list is read again anyway.
   function panicVaults(callback) {
@@ -545,6 +568,7 @@ Item {
                || msg.name === Protocol.FirewallEvent.CONNECTION_RESOLVED) handlePromptEvent(msg.name, msg.params)
       else if (msg.name === "POSTURE_CHANGED") posture = msg.params
       else if (msg.name === "VAULT_STATE_CHANGED") vaults = Vault.upsertVault(vaults, msg.params)
+      else if (msg.name === "VAULT_REMOVED" && msg.params) vaults = Vault.removeVault(vaults, msg.params.vault_id)
       else if (msg.name === Protocol.FirewallEvent.ALERT) firewallAlerts = Indicator.mergeAlert(firewallAlerts, msg.params)
       else if (msg.name.indexOf("USB_DEVICE_") === 0) handleUsbEvent(msg.name, msg.params)
       else if (msg.name === "THREAT_EXEC_DETECTED") threatAlerts = Threat.upsertAlert(threatAlerts, msg.params)

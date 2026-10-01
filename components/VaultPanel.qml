@@ -17,6 +17,13 @@ import "../services/Vault.js" as Vault
 // reads it there. Panic needs a second click within 4 s; it stops the
 // programs using the vaults, unmounts and locks all of them, and closes a
 // passphrase prompt that is open.
+//
+// "Add vault" makes a new gocryptfs vault (VAULT_CREATE; the daemon asks
+// for its passphrase with pinentry, typed twice) or registers an existing
+// gocryptfs folder or LUKS disk (VAULT_ADD), and Remove, after a second
+// click, takes one out (VAULT_REMOVE). The daemon writes
+// ~/.config/omarchy-security/config.toml for all three; Remove leaves the
+// encrypted data where it is.
 Item {
   id: root
 
@@ -46,11 +53,89 @@ Item {
   property bool panicBusy: false
   property var panicResult: null
   property string panicError: ""
-  readonly property bool panicAvailable: Vault.canPanic(vaults, ops)
+  // Panic also closes the new passphrase's prompt.
+  readonly property bool panicAvailable: Vault.canPanic(vaults, ops) || creating
   readonly property var panicSummary: Vault.panicSummary(panicResult, vaults)
+
+  // The add form, while it is open.
+  readonly property bool canEdit: ready && moduleState !== "not_implemented"
+  property bool adding: false
+  readonly property var emptyForm: ({ kind: "create", name: "", source: "", mountPoint: "" })
+  property var form: emptyForm
+  readonly property var addCheck: Vault.checkAddForm(form, vaults)
+  property bool addBusy: false
+  readonly property bool creating: addBusy && addCheck.method === "VAULT_CREATE"
+  property string addError: ""
+
+  // Remove asks for a second click, like Panic; errors by vault_id.
+  property string confirmingRemove: ""
+  property string removing: ""
+  property var removeErrors: ({})
 
   implicitWidth: column.implicitWidth
   implicitHeight: column.implicitHeight
+
+  function setField(name, value) {
+    var next = Object.assign({}, form)
+    next[name] = value
+    form = next
+    addError = ""
+  }
+
+  function openForm() {
+    form = emptyForm
+    addError = ""
+    adding = true
+  }
+
+  function closeForm() {
+    adding = false
+    form = emptyForm
+    addError = ""
+  }
+
+  // Sends VAULT_ADD. Returns false when the form cannot be sent.
+  function addVault() {
+    if (!canEdit || addBusy || !addCheck.params) return false
+    addBusy = true
+    addError = ""
+    var method = addCheck.method
+    security.addVault(method, addCheck.params, function(error) {
+      root.addBusy = false
+      if (error) root.addError = Vault.addErrorText(error, method)
+      else root.closeForm()
+    })
+    return true
+  }
+
+  function setRemoveError(vaultId, text) {
+    var next = Object.assign({}, removeErrors)
+    if (text) next[vaultId] = text
+    else delete next[vaultId]
+    removeErrors = next
+  }
+
+  // The first click arms Remove, the second sends it. Returns true only
+  // when it was sent.
+  function remove(vaultId) {
+    var vault = Vault.findVault(vaults, vaultId)
+    if (!canEdit || !vault || removing !== "" || ops[vaultId] || Vault.isMounted(vault)) return false
+    if (confirmingRemove !== vaultId) {
+      confirmingRemove = vaultId
+      removeTimer.restart()
+      return false
+    }
+    confirmingRemove = ""
+    removeTimer.stop()
+    removing = vaultId
+    setRemoveError(vaultId, "")
+    security.removeVault(vaultId, function(error) {
+      root.removing = ""
+      if (error) root.setRemoveError(vaultId, Vault.removeErrorText(error))
+      else root.setRemoveError(vaultId, "")
+    })
+    return true
+  }
 
   function setError(vaultId, error) {
     var next = Object.assign({}, errors)
@@ -106,6 +191,12 @@ Item {
     onTriggered: root.confirmingPanic = false
   }
 
+  Timer {
+    id: removeTimer
+    interval: Vault.PANIC_CONFIRM_MS
+    onTriggered: root.confirmingRemove = ""
+  }
+
   ColumnLayout {
     id: column
     anchors { left: parent.left; right: parent.right }
@@ -118,6 +209,18 @@ Item {
         Layout.fillWidth: true
         text: "Vaults"
         foreground: ThemeProvider.foreground
+      }
+
+      Button {
+        visible: root.canEdit && !root.adding
+        bordered: true
+        text: "Add vault"
+        iconText: "\u{F0415}"  // nf-md-plus
+        tooltipText: "Create an encrypted vault, or add one you already have"
+        foreground: ThemeProvider.foreground
+        accent: ThemeProvider.accent
+        fontSize: Style.font.caption
+        onClicked: root.openForm()
       }
 
       Button {
@@ -149,9 +252,143 @@ Item {
       font.pixelSize: Style.font.caption
     }
 
+    // The add form.
+    ColumnLayout {
+      Layout.fillWidth: true
+      visible: root.adding
+      spacing: Style.space(6)
+
+      Text {
+        Layout.fillWidth: true
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        text: root.form.kind === "create"
+          ? "Create an encrypted folder (gocryptfs). You choose its passphrase in a separate window; it is asked for each time you mount the vault, and never stored."
+          : "Add an encrypted folder (gocryptfs) or disk (LUKS) you already have. Its passphrase is asked for each time you mount it, and never stored."
+        color: ThemeProvider.dimText
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      TextField {
+        Layout.fillWidth: true
+        placeholderText: "Name, e.g. Work documents"
+        text: root.form.name
+        foreground: ThemeProvider.foreground
+        accent: ThemeProvider.accent
+        font.pixelSize: Style.font.bodySmall
+        onTextEdited: root.setField("name", text)
+        onAccepted: root.addVault()
+      }
+
+      Flow {
+        Layout.fillWidth: true
+        spacing: Style.space(6)
+
+        Repeater {
+          model: Vault.FORM_KINDS
+
+          Button {
+            required property var modelData
+            bordered: true
+            enabled: !root.addBusy
+            active: root.form.kind === modelData.id
+            text: modelData.label
+            foreground: ThemeProvider.foreground
+            accent: ThemeProvider.accent
+            fontSize: Style.font.caption
+            onClicked: root.setField("kind", modelData.id)
+          }
+        }
+      }
+
+      TextField {
+        Layout.fillWidth: true
+        placeholderText: root.form.kind === "luks"
+          ? "Image or disk, e.g. ~/Vaults/backup.img or /dev/disk/by-uuid/…"
+          : root.form.kind === "create"
+          ? "Encrypted files in (default " + root.addCheck.source + ")"
+          : "Encrypted folder, e.g. ~/Vaults/work.enc"
+        text: root.form.source
+        foreground: ThemeProvider.foreground
+        accent: ThemeProvider.accent
+        font.pixelSize: Style.font.bodySmall
+        onTextEdited: root.setField("source", text)
+        onAccepted: root.addVault()
+      }
+
+      TextField {
+        Layout.fillWidth: true
+        visible: root.form.kind !== "luks"
+        placeholderText: "Open it at (default " + root.addCheck.mountPoint + ")"
+        text: root.form.mountPoint
+        foreground: ThemeProvider.foreground
+        accent: ThemeProvider.accent
+        font.pixelSize: Style.font.bodySmall
+        onTextEdited: root.setField("mountPoint", text)
+        onAccepted: root.addVault()
+      }
+
+      Text {
+        Layout.fillWidth: true
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        text: root.creating ? "Choose the passphrase in the passphrase window, and type it twice."
+          : root.form.kind === "luks" ? "udisks2 chooses where it opens, under /run/media."
+          : root.form.kind === "create" ? "The folder must be new or empty. Keep the passphrase safe: without it the files cannot be recovered."
+          : "The folder must already hold a gocryptfs vault (gocryptfs.conf)."
+        color: ThemeProvider.dimText
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      Text {
+        Layout.fillWidth: true
+        visible: text !== ""
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        text: root.addError !== "" ? root.addError : root.addCheck.error
+        color: ThemeProvider.danger
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(8)
+
+        Button {
+          bordered: true
+          enabled: !root.addBusy && !!root.addCheck.params
+          opacity: enabled ? 1 : 0.5
+          text: root.creating ? "Waiting for the passphrase…" : root.addBusy ? "Adding…"
+            : root.form.kind === "create" ? "Create" : "Add"
+          foreground: ThemeProvider.foreground
+          accent: ThemeProvider.accent
+          fontSize: Style.font.caption
+          onClicked: root.addVault()
+        }
+
+        Button {
+          enabled: !root.addBusy
+          text: "Cancel"
+          foreground: ThemeProvider.dimText
+          accent: ThemeProvider.accent
+          fontSize: Style.font.caption
+          onClicked: root.closeForm()
+        }
+      }
+
+      PanelSeparator {
+        Layout.fillWidth: true
+        visible: root.vaults.length > 0
+        foreground: ThemeProvider.foreground
+      }
+    }
+
     Text {
       Layout.fillWidth: true
-      visible: root.emptyText !== ""
+      visible: root.emptyText !== "" && !root.adding
       textFormat: Text.PlainText
       wrapMode: Text.Wrap
       text: root.emptyText
@@ -265,6 +502,34 @@ Item {
             fontSize: Style.font.caption
             onClicked: root.toggle(row.vaultId)
           }
+
+          Button {
+            Layout.alignment: Qt.AlignTop
+            visible: root.canEdit
+            readonly property bool confirming: root.confirmingRemove === row.vaultId
+            bordered: confirming
+            enabled: row.op === "" && !row.mounted && root.removing === "" && !root.panicBusy
+            opacity: enabled ? 1 : 0.5
+            text: root.removing === row.vaultId ? "Removing…" : confirming ? "Click again" : "Remove"
+            tooltipText: row.mounted ? "Unmount it before removing it"
+              : confirming ? "" : "Remove from the hub; the encrypted files are kept"
+            foreground: ThemeProvider.danger
+            accent: ThemeProvider.danger
+            active: confirming
+            fontSize: Style.font.caption
+            onClicked: root.remove(row.vaultId)
+          }
+        }
+
+        Text {
+          Layout.fillWidth: true
+          visible: text !== ""
+          textFormat: Text.PlainText
+          wrapMode: Text.Wrap
+          text: root.removeErrors[row.vaultId] || ""
+          color: ThemeProvider.danger
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
         }
 
         Text {
